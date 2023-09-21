@@ -1,0 +1,22 @@
+ngx_feature="Opentelemetry module"
+have=NGX_HTTP_OPENTELEMETRY . auto/have
+
+ngx_addon_name=ngx_http_opentelemetry_module
+
+if test -n "$ngx_module_link"; then
+    ngx_module_type=HTTP
+    ngx_module_name=ngx_http_opentelemetry_module
+    ngx_module_incs="$ngx_addon_dir/src"
+    ngx_module_srcs="\
+        $ngx_addon_dir/src/ngx_http_opentelemetry_module.c\
+    "
+    ngx_module_libs=-lopentelemetry-c
+    . auto/module
+else
+    HTTP_MODULES="$HTTP_MODULES ngx_http_opentelemetry_module"
+    HTTP_INCS="$HTTP_INCS $ngx_addon_dir/src"
+    NGX_ADDON_SRCS="$NGX_ADDON_SRCS \
+        $ngx_addon_dir/src/ngx_http_opentelemetry_module.c \
+    "
+    CORE_LIBS=-lopentelemetry-c
+fi
