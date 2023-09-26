@@ -9,6 +9,7 @@
 
 #include <stdbool.h>
 #include <inttypes.h>
+#include <stdlib.h>
 #include <cjaeger.h>
 
 static char ngx_http_lua_spans_key;
@@ -196,8 +197,9 @@ ngx_http_lua_opentelemetry_span_finish_helper(void *data) {
     return;
 }
 
-void
-ngx_http_lua_opentelemetry_span_add_event_helper(void *data, const opentelemetry_string *name, const opentelemetry_attribute *attributes, size_t nattributes) {
+opentelemetry_span *
+ngx_http_lua_opentelemetry_get_current_span(void *data)
+{
     lua_State *L = (lua_State*)data;
 
     ngx_http_request_t *r;
@@ -208,14 +210,9 @@ ngx_http_lua_opentelemetry_span_add_event_helper(void *data, const opentelemetry
     }
 
     if (!ngx_http_opentelemetry_is_enabled(r))
-        return;
+        return NULL;
 
-    void *span = ngx_http_lua_opentelemetry_span_peek(L);
-    if (!span)
-        return;
-
-    opentelemetry_span_add_event(span, name, NULL, attributes, nattributes);
-    return;
+    return ngx_http_lua_opentelemetry_span_peek(L);
 }
 
 static int
@@ -311,35 +308,135 @@ ngx_http_lua_opentelemetry_span_finish(lua_State *L) {
     return 0;
 }
 
-static int
-ngx_http_lua_opentelemetry_span_log(lua_State *L) {
-    opentelemetry_string name = OPENTELEMETRY_STR(NULL, 0);
-    size_t key_len;
-    const char *key = luaL_checklstring(L, 1, &key_len);
-    int value_type = lua_type(L, 2);
+/* returns true if value which is at the top of the stack is replaced with the temporary one */
+static bool
+ngx_http_lua_opentelemetry_fill_attr(opentelemetry_attribute *attr, lua_State *L, const char *key, size_t key_len)
+{
+    attr->name = (opentelemetry_string)OPENTELEMETRY_STR(key, key_len);
+    int value_type = lua_type(L, -1);
     if (value_type == LUA_TNUMBER) {
-        lua_Number value = lua_tonumber(L, 2);
-        opentelemetry_attribute attr = OPENTELEMETRY_ATTRIBUTE(
-            OPENTELEMETRY_STR(key, key_len), OPENTELEMETRY_VALUE_DOUBLE(value));
-        ngx_http_lua_opentelemetry_span_add_event_helper(L, &name, &attr, 1);
+        lua_Number value = lua_tonumber(L, -1);
+        attr->value = (opentelemetry_value)OPENTELEMETRY_VALUE_DOUBLE(value);
+        return false;
     } else if (value_type == LUA_TBOOLEAN) {
-        int value = lua_toboolean(L, 2);
-        opentelemetry_attribute attr = OPENTELEMETRY_ATTRIBUTE(
-            OPENTELEMETRY_STR(key, key_len), OPENTELEMETRY_VALUE_BOOL(value));
-        ngx_http_lua_opentelemetry_span_add_event_helper(L, &name, &attr, 1);
+        int value = lua_toboolean(L, -1);
+        attr->value = (opentelemetry_value)OPENTELEMETRY_VALUE_BOOL(value);
+        return false;
     } else {
         size_t value_len;
-        const char *value = lua_tolstring(L, 2, &value_len);
-        if (value != NULL) {
-            opentelemetry_attribute attr = OPENTELEMETRY_ATTRIBUTE(
-                OPENTELEMETRY_STR(key, key_len), OPENTELEMETRY_VALUE_STR(value, value_len));
-            ngx_http_lua_opentelemetry_span_add_event_helper(L, &name, &attr, 1);
-        } else {
-            opentelemetry_attribute attr = OPENTELEMETRY_ATTRIBUTE(
-                OPENTELEMETRY_STR(key, key_len), OPENTELEMETRY_VALUE_CSTR("nil"));
-            ngx_http_lua_opentelemetry_span_add_event_helper(L, &name, &attr, 1);
-        }
+        const char *value = lua_tolstring(L, -1, &value_len);
+        if (value != NULL)
+            attr->value = (opentelemetry_value)OPENTELEMETRY_VALUE_STR(value, value_len);
+        else
+            attr->value = (opentelemetry_value)OPENTELEMETRY_VALUE_CSTR("nil");
+        return false;
     }
+}
+
+static int
+ngx_http_lua_opentelemetry_span_log(lua_State *L)
+{
+    opentelemetry_span *span = ngx_http_lua_opentelemetry_get_current_span(L);
+    if (span == NULL)
+        return 0;
+
+    size_t key_len;
+    const char *key = luaL_checklstring(L, 1, &key_len);
+    if (key_len == 0)
+        return 0;
+	lua_settop(L, 2);
+    opentelemetry_string name = OPENTELEMETRY_STR(NULL, 0);
+    opentelemetry_attribute attr;
+    ngx_http_lua_opentelemetry_fill_attr(&attr, L, key, key_len);
+    opentelemetry_span_add_event(span, &name, NULL, &attr, 1);
+
+    return 0;
+}
+
+static int
+ngx_http_lua_opentelemetry_span_event(lua_State *L)
+{
+    opentelemetry_span *span = ngx_http_lua_opentelemetry_get_current_span(L);
+    if (span == NULL)
+        return 0;
+
+	lua_settop(L, 3);
+
+    int table_idx;
+    opentelemetry_string name = OPENTELEMETRY_STR(NULL, 0);
+    if (lua_istable(L, 1))
+        table_idx = 1;
+    else {
+        name.ptr = lua_tolstring(L, 1, &name.len);
+        if (!lua_istable(L, 2)) {
+            size_t key_len;
+            const char *key = lua_tolstring(L, 2, &key_len);
+            if (key == NULL || key_len == 0) {
+                if (name.len != 0)
+                    opentelemetry_span_add_event(span, &name, NULL, NULL, 0);
+                return 0;
+            }
+            opentelemetry_attribute attr;
+            ngx_http_lua_opentelemetry_fill_attr(&attr, L, key, key_len);
+            opentelemetry_span_add_event(span, &name, NULL, &attr, 1);
+            return 0;
+        }
+        table_idx = 2;
+    }
+
+    /* TODO: use iterable opentelemetry_span_add_event interface, when it will be done */
+    opentelemetry_attribute lattrs[30], *attrs = lattrs;
+    size_t nattrs_allocated = sizeof(lattrs) / sizeof(lattrs[0]);
+    size_t nattrs = 0;
+
+    lua_pushnil(L);
+    while (lua_next(L, table_idx) != 0) {
+        if (lua_type(L, -2) != LUA_TSTRING) {
+            lua_pop(L, 1);
+            continue;
+        }
+        size_t key_len;
+        const char *key = lua_tolstring(L, -2, &key_len);
+        if (key == NULL || key_len == 0) {
+            lua_pop(L, 1);
+            continue;
+        }
+        if (nattrs == nattrs_allocated) {
+            opentelemetry_attribute *attrs_new;
+
+            nattrs_allocated *= 2;
+            if (attrs == lattrs) {
+                attrs_new = malloc(nattrs_allocated * sizeof(attrs[0]));
+                if (attrs_new != NULL)
+                    memcpy(attrs_new, attrs, nattrs * sizeof(attrs[0]));
+            } else
+                attrs_new = realloc(attrs, nattrs_allocated * sizeof(attrs[0]));
+
+            if (attrs_new == NULL) {
+                if (attrs != lattrs)
+                    free(attrs);
+                return 0;
+            }
+            attrs = attrs_new;
+        }
+        opentelemetry_attribute *attr = &attrs[nattrs++];
+        if (!ngx_http_lua_opentelemetry_fill_attr(attr, L, key, key_len)) {
+            lua_pop(L, 1);
+            continue;
+        }
+        /*
+         * We now have a temporary value on the stack at index -1 instead of the
+         * previous value, and the pointer to its data is store in the attr. So,
+         * we cannot remove the value. Swap key and value on the stack instead.
+         */
+        lua_pushvalue(L, -2);
+        lua_remove(L, -3);
+    }
+    if (nattrs != 0 || name.len != 0)
+        opentelemetry_span_add_event(span, &name, NULL, attrs, nattrs);
+
+    if (attrs != lattrs)
+        free(attrs);
     return 0;
 }
 
@@ -362,6 +459,9 @@ ngx_http_lua_inject_opentelemetry_api(lua_State *L)
 
     lua_pushcfunction(L, ngx_http_lua_opentelemetry_span_finish);
     lua_setfield(L, -2, "span_finish");
+
+    lua_pushcfunction(L, ngx_http_lua_opentelemetry_span_event);
+    lua_setfield(L, -2, "span_event");
 
     lua_pushcfunction(L, ngx_http_lua_opentelemetry_span_log);
     lua_setfield(L, -2, "span_log");

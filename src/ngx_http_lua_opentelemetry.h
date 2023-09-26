@@ -13,7 +13,7 @@ void ngx_http_lua_inject_opentelemetry_api(lua_State *L);
 void ngx_http_lua_opentelemetry_span_start_helper(void *data, const char *operation_name, size_t operation_name_len);
 void ngx_http_lua_opentelemetry_span_finish_helper(void *data);
 bool ngx_http_lua_opentelemetry_span_debug_helper(void *data);
-void ngx_http_lua_opentelemetry_span_add_event_helper(void *data, const opentelemetry_string *name, const opentelemetry_attribute *attributes, size_t nattributes);
+opentelemetry_span *ngx_http_lua_opentelemetry_get_current_span(void *data);
 
 #endif /* NGX_HTTP_LUA_OPENTELEMETRY_H */
 
