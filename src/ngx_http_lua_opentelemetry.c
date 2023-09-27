@@ -440,6 +440,47 @@ ngx_http_lua_opentelemetry_span_event(lua_State *L)
     return 0;
 }
 
+static int
+ngx_http_lua_opentelemetry_span_attr(lua_State *L)
+{
+    opentelemetry_span *span = ngx_http_lua_opentelemetry_get_current_span(L);
+    if (span == NULL)
+        return 0;
+
+    lua_settop(L, 2);
+
+    if (!lua_istable(L, 1)) {
+        size_t key_len;
+        const char *key = lua_tolstring(L, -2, &key_len);
+        if (key == NULL || key_len == 0)
+            return 0;
+        opentelemetry_attribute attr;
+        ngx_http_lua_opentelemetry_fill_attr(&attr, L, key, key_len);
+        opentelemetry_span_set_attribute(span, &attr);
+        return 0;
+    }
+
+    lua_pushnil(L);
+    while (lua_next(L, 1) != 0) {
+        if (lua_type(L, -2) != LUA_TSTRING) {
+            lua_pop(L, 1);
+            continue;
+        }
+        size_t key_len;
+        const char *key = lua_tolstring(L, -2, &key_len);
+        if (key == NULL || key_len == 0) {
+            lua_pop(L, 1);
+            continue;
+        }
+        opentelemetry_attribute attr;
+        ngx_http_lua_opentelemetry_fill_attr(&attr, L, key, key_len);
+        opentelemetry_span_set_attribute(span, &attr);
+        lua_pop(L, 1);
+    }
+
+    return 0;
+}
+
 void
 ngx_http_lua_inject_opentelemetry_api(lua_State *L)
 {
@@ -465,6 +506,9 @@ ngx_http_lua_inject_opentelemetry_api(lua_State *L)
 
     lua_pushcfunction(L, ngx_http_lua_opentelemetry_span_log);
     lua_setfield(L, -2, "span_log");
+
+    lua_pushcfunction(L, ngx_http_lua_opentelemetry_span_attr);
+    lua_setfield(L, -2, "span_attr");
 
     lua_setfield(L, -2, "tracing");
 }
