@@ -34,6 +34,7 @@ typedef struct {
     ngx_str_t tracestate_debug_key;
     ngx_str_t tracestate_debug_value;
     ngx_str_t service_name;
+    ngx_flag_t limit_span_size;
 } ngx_http_opentelemetry_main_conf_t;
 
 typedef struct {
@@ -97,6 +98,13 @@ static ngx_command_t ngx_http_opentelemetry_commands[] = {
       ngx_http_set_opentelemetry_tracestate_debug,
       NGX_HTTP_MAIN_CONF_OFFSET,
       0,
+      NULL },
+
+    { ngx_string("opentelemetry_limit_span_size"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      offsetof(ngx_http_opentelemetry_main_conf_t, limit_span_size),
       NULL },
 
     { ngx_string("set_opentelemetry_from"),
@@ -272,6 +280,8 @@ ngx_http_opentelemetry_init_process(ngx_cycle_t *cycle)
         provider = NULL;
         return NGX_OK;
     }
+    if (omcf->limit_span_size)
+        opentelemetry_tracer_limit_span_size(tracer, true);
     return NGX_OK;
 }
 
@@ -296,6 +306,7 @@ ngx_http_opentelemetry_create_main_conf(ngx_conf_t *cf)
     if ((omcf = ngx_pcalloc(cf->pool, sizeof(*omcf))) == NULL) {
         return NGX_CONF_ERROR;
     }
+    omcf->limit_span_size = NGX_CONF_UNSET;
 
     return omcf;
 }
@@ -303,6 +314,10 @@ ngx_http_opentelemetry_create_main_conf(ngx_conf_t *cf)
 static char *
 ngx_http_opentelemetry_init_main_conf(ngx_conf_t* cf, void *conf)
 {
+    ngx_http_opentelemetry_main_conf_t *omcf = conf;
+
+    ngx_conf_merge_value(omcf->limit_span_size, NGX_CONF_UNSET, 0);
+
     return NGX_CONF_OK;
 }
 
