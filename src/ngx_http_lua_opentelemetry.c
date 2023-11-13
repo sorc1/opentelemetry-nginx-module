@@ -128,16 +128,6 @@ ngx_http_lua_opentelemetry_span_start_helper(void *data, const char *operation_n
     return;
 }
 
-static int ngx_http_lua_opentelemetry_header_trav_start(void *arg) {
-    lua_State *L = arg;
-
-    /* here we allow to restart traversal from the middle */
-    lua_pop(L, 1);
-    lua_pushnil(L);
-
-    return 0;
-}
-
 static const char *ngx_http_lua_opentelemetry_span_start_headers_helper_value(const char *name, size_t name_len, size_t *value_len, void *arg)
 {
     lua_State *L = arg;
@@ -344,7 +334,7 @@ ngx_http_lua_opentelemetry_span_log(lua_State *L)
     const char *key = luaL_checklstring(L, 1, &key_len);
     if (key_len == 0)
         return 0;
-	lua_settop(L, 2);
+    lua_settop(L, 2);
     opentelemetry_string name = OPENTELEMETRY_STR(NULL, 0);
     opentelemetry_attribute attr;
     ngx_http_lua_opentelemetry_fill_attr(&attr, L, key, key_len);
@@ -360,7 +350,7 @@ ngx_http_lua_opentelemetry_span_event(lua_State *L)
     if (span == NULL)
         return 0;
 
-	lua_settop(L, 3);
+    lua_settop(L, 3);
 
     int table_idx;
     opentelemetry_string name = OPENTELEMETRY_STR(NULL, 0);

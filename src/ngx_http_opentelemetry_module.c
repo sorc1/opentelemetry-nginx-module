@@ -63,7 +63,6 @@ static char *ngx_http_set_opentelemetry_tracestate_debug(ngx_conf_t *cf, ngx_com
 static char *ngx_http_set_opentelemetry_from(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_set_opentelemetry_variable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_set_opentelemetry_sample(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-static int ngx_http_opentelemetry_header_variable_set(const char *name, size_t name_len, const char *value, size_t value_len, void *arg);
 static ngx_int_t ngx_http_opentelemetry_header_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
 
 static ngx_http_variable_t ngx_http_opentelemetry_vars[] = {
@@ -189,8 +188,8 @@ static bool ngx_http_opentelemetry_sampler(opentelemetry_sampling_result *result
     if (sampler_debug && (ts = opentelemetry_trace_state_create()) != NULL) {
         opentelemetry_trace_state *ts2;
 
-        ts2 = opentelemetry_trace_state_set(ts, omcf->tracestate_debug_key.data, omcf->tracestate_debug_key.len,
-            omcf->tracestate_debug_value.data, omcf->tracestate_debug_value.len);
+        ts2 = opentelemetry_trace_state_set(ts, (char*)omcf->tracestate_debug_key.data, omcf->tracestate_debug_key.len,
+            (char*)omcf->tracestate_debug_value.data, omcf->tracestate_debug_value.len);
         opentelemetry_trace_state_destroy(ts);
         ts = ts2;
     }
@@ -261,8 +260,8 @@ ngx_http_opentelemetry_init_process(ngx_cycle_t *cycle)
     }
 
     opentelemetry_attribute provider_attrs[] = {
-        OPENTELEMETRY_ATTRIBUTE_STR("service.name", omcf->service_name.data, omcf->service_name.len),
-        OPENTELEMETRY_ATTRIBUTE_STR("host.name", cycle->hostname.data, cycle->hostname.len),
+        OPENTELEMETRY_ATTRIBUTE_STR("service.name", (char*)omcf->service_name.data, omcf->service_name.len),
+        OPENTELEMETRY_ATTRIBUTE_STR("host.name", (char*)cycle->hostname.data, cycle->hostname.len),
     };
 
     provider = opentelemetry_provider_create(processor, sampler, provider_attrs, sizeof(provider_attrs) / sizeof(provider_attrs[0]));
@@ -837,7 +836,7 @@ ngx_http_opentelemetry_span_start_headers(ngx_http_request_t *r, const char *ope
             size_t value_len = sizeof(value) - 1;
 
             if (ts != NULL && opentelemetry_trace_state_get(
-                    ts, omcf->tracestate_debug_key.data, omcf->tracestate_debug_key.len,
+                    ts, (char*)omcf->tracestate_debug_key.data, omcf->tracestate_debug_key.len,
                     value, &value_len)) {
                 if (value_len == omcf->tracestate_debug_value.len && !memcmp(value, omcf->tracestate_debug_value.data, value_len))
                     ctx->tracing_level = 2;
