@@ -4,6 +4,17 @@
 
 #define OPENTELEMETRY_HEADER_VARIABLE_PREFIX "opentelemetry_header_"
 
+#define NGX_HTTP_OPENTELEMETRY_EXPORTER_JAEGER_OPTION_FORMAT_DEFAULT OPENTELEMETRY_C_EXPORTER_JAEGER_FORMAT_THRIFT_UDP_COMPACT
+#define NGX_HTTP_OPENTELEMETRY_EXPORTER_JAEGER_FORMAT_THRIFT_UDP_COMPACT_SERVER_PORT_DEFAULT 6831
+
+#define NGX_HTTP_OPENTELEMETRY_EXPORTER_OTLP_HTTP_OPTION_CONTENT_TYPE_DEFAULT OPENTELEMETRY_C_EXPORTER_OTLP_HTTP_CONTENT_TYPE_BINARY
+#define NGX_HTTP_OPENTELEMETRY_EXPORTER_OTLP_HTTP_OPTION_JSON_BYTES_MAPPING_DEFAULT OPENTELEMETRY_C_EXPORTER_OTLP_HTTP_JSON_BMAPPING_KHEXID
+
+#define NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_DEFAULT NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_BATCH
+#define NGX_HTTP_OPENTELEMETRY_PROCESSOR_BATCH_OPTION_MAX_QUEUE_SIZE_DEFAULT 2048
+#define NGX_HTTP_OPENTELEMETRY_PROCESSOR_BATCH_OPTION_SCHEDULE_DELAY_MILLIS_DEFAULT 5000
+#define NGX_HTTP_OPENTELEMETRY_PROCESSOR_BATCH_OPTION_MAX_EXPORT_BATCH_SIZE_DEFAULT 512
+
 static const opentelemetry_string ngx_http_opentelemetry_request_name = OPENTELEMETRY_CSTR("request");
 
 typedef enum ngx_http_opentelemetry_exporter_type {
@@ -55,6 +66,9 @@ static void *ngx_http_opentelemetry_create_main_conf(ngx_conf_t *cf);
 static char *ngx_http_opentelemetry_init_main_conf(ngx_conf_t* cf, void *conf);
 static void *ngx_http_opentelemetry_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_opentelemetry_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
+static char *ngx_http_set_opentelemetry_jaeger_exporter_options(ngx_conf_t *cf, opentelemetry_exporter_jaeger_options *jaeger_options);
+static char *ngx_http_set_opentelemetry_otlp_http_exporter_options(ngx_conf_t *cf, opentelemetry_exporter_otlp_http_options *otlp_http_options);
+static char *ngx_http_set_opentelemetry_batch_processor_options(ngx_conf_t *cf, opentelemetry_processor_batch_options *batch_options);
 static char *ngx_http_set_opentelemetry_exporter(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_set_opentelemetry_tracestate_debug(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_set_opentelemetry_from(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
@@ -83,7 +97,7 @@ static ngx_command_t ngx_http_opentelemetry_commands[] = {
       NULL },
 
     { ngx_string("opentelemetry_exporter"),
-      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE12,
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE2|NGX_CONF_TAKE3|NGX_CONF_TAKE4,
       ngx_http_set_opentelemetry_exporter,
       NGX_HTTP_MAIN_CONF_OFFSET,
       0,
@@ -612,31 +626,382 @@ ngx_http_opentelemetry_init(ngx_conf_t *cf)
 }
 
 static char*
+ngx_http_set_opentelemetry_jaeger_exporter_options(ngx_conf_t *cf, opentelemetry_exporter_jaeger_options *jaeger_options) {
+    jaeger_options->format = NGX_HTTP_OPENTELEMETRY_EXPORTER_JAEGER_OPTION_FORMAT_DEFAULT;
+    jaeger_options->server_port = NGX_HTTP_OPENTELEMETRY_EXPORTER_JAEGER_FORMAT_THRIFT_UDP_COMPACT_SERVER_PORT_DEFAULT;
+    bool server_port_auto_specified = true;
+
+    char *token, *saveptr;
+    for (token = strtok_r((char*)((ngx_str_t*)cf->args->elts)[2].data, "|", &saveptr); token; token = strtok_r(NULL, "|", &saveptr)) {
+        char *equals = ngx_strchr(token, '=');
+        if (!equals) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid exporter options");
+            return NGX_CONF_ERROR;
+        }
+        *equals = '\0';
+
+        char *value_begin = equals + 1;
+        size_t value_len = strlen(value_begin);
+        if (equals - token < 1 || value_len < 1) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid exporter options");
+            return NGX_CONF_ERROR;
+        }
+
+        if (ngx_strcmp(token, "format") == 0) {
+            if (ngx_strcmp(value_begin, "thrift_udp_compact") == 0) {
+                jaeger_options->format = OPENTELEMETRY_C_EXPORTER_JAEGER_FORMAT_THRIFT_UDP_COMPACT;
+                if (server_port_auto_specified)
+                    jaeger_options->server_port = NGX_HTTP_OPENTELEMETRY_EXPORTER_JAEGER_FORMAT_THRIFT_UDP_COMPACT_SERVER_PORT_DEFAULT;
+            } else if (ngx_strcmp(value_begin, "thrift_http") == 0) {
+                jaeger_options->format = OPENTELEMETRY_C_EXPORTER_JAEGER_FORMAT_THRIFT_HTTP;
+            } else {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid format exporter option");
+                return NGX_CONF_ERROR;
+            }
+        } else if (ngx_strcmp(token, "endpoint") == 0) {
+            jaeger_options->endpoint = value_begin;
+        } else if (ngx_strcmp(token, "server_port") == 0) {
+            ngx_int_t server_port = ngx_atoi((u_char*)value_begin, value_len);
+            if (server_port == NGX_ERROR || server_port > UINT16_MAX) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid server_port exporter option");
+                return NGX_CONF_ERROR;
+            }
+            jaeger_options->server_port = server_port;
+            server_port_auto_specified = false;
+        } else {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid exporter option: \"%s\"", token);
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    if (!jaeger_options->endpoint) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "exporter endpoint is missed");
+        return NGX_CONF_ERROR;
+    } else if (jaeger_options->format == OPENTELEMETRY_C_EXPORTER_JAEGER_FORMAT_THRIFT_UDP_COMPACT && !jaeger_options->server_port) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "exporter server_port is missed");
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
+}
+
+static char*
+ngx_http_set_opentelemetry_otlp_http_exporter_options(ngx_conf_t *cf, opentelemetry_exporter_otlp_http_options *otlp_http_options)
+{
+    otlp_http_options->content_type = NGX_HTTP_OPENTELEMETRY_EXPORTER_OTLP_HTTP_OPTION_CONTENT_TYPE_DEFAULT;
+    otlp_http_options->json_bytes_mapping = NGX_HTTP_OPENTELEMETRY_EXPORTER_OTLP_HTTP_OPTION_JSON_BYTES_MAPPING_DEFAULT;
+
+    size_t headers_len = 0, headers_cap = 0;
+    opentelemetry_http_header *headers = NULL;
+
+    char *token, *saveptr;
+    for (token = strtok_r((char*)((ngx_str_t*)cf->args->elts)[2].data, "|", &saveptr); token; token = strtok_r(NULL, "|", &saveptr)) {
+        char *equals = ngx_strchr(token, '=');
+        if (!equals) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid exporter options");
+            return NGX_CONF_ERROR;
+        }
+        *equals = '\0';
+
+        char *value_begin = equals + 1;
+        size_t value_len = strlen(value_begin);
+        if (equals - token < 1 || value_len < 1) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid exporter options");
+            return NGX_CONF_ERROR;
+        }
+
+        if (ngx_strcmp(token, "url") == 0) {
+            otlp_http_options->url = value_begin;
+        } else if (ngx_strcmp(token, "content_type") == 0) {
+            if (ngx_strcmp(value_begin, "json") == 0) {
+                otlp_http_options->content_type = OPENTELEMETRY_C_EXPORTER_OTLP_HTTP_CONTENT_TYPE_JSON;
+            } else if (ngx_strcmp(value_begin, "binary") == 0) {
+                otlp_http_options->content_type = OPENTELEMETRY_C_EXPORTER_OTLP_HTTP_CONTENT_TYPE_BINARY;
+            } else {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid content_type exporter option");
+                return NGX_CONF_ERROR;
+            }
+        } else if (ngx_strcmp(token, "json_bytes_mapping") == 0) {
+            if (ngx_strcmp(value_begin, "khexid") == 0) {
+                otlp_http_options->json_bytes_mapping = OPENTELEMETRY_C_EXPORTER_OTLP_HTTP_JSON_BMAPPING_KHEXID;
+            } else if (ngx_strcmp(value_begin, "khex") == 0) {
+                otlp_http_options->json_bytes_mapping = OPENTELEMETRY_C_EXPORTER_OTLP_HTTP_JSON_BMAPPING_KHEX;
+            } else if (ngx_strcmp(value_begin, "kbase64") == 0) {
+                otlp_http_options->json_bytes_mapping = OPENTELEMETRY_C_EXPORTER_OTLP_HTTP_JSON_BMAPPING_KBASE64;
+            } else {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid json_bytes_mapping exporter option");
+                return NGX_CONF_ERROR;
+            }
+        } else if (ngx_strcmp(token, "headers") == 0) {
+            char *colon = strchr(value_begin, ':');
+            if (!colon) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid headers exporter options");
+                return NGX_CONF_ERROR;
+            }
+            *colon = '\0';
+
+            size_t header_name_len = colon - value_begin;
+            char *header_value_begin = colon + 1;
+            while (*header_value_begin == ' ')
+                header_value_begin++;
+            size_t header_value_len = value_len - (header_value_begin - value_begin);
+
+            if (header_name_len < 1 || header_value_len < 1) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid headers exporter options");
+                return NGX_CONF_ERROR;
+            }
+
+            if (headers_len == 0) {
+                headers = (opentelemetry_http_header*)ngx_palloc(cf->pool, 2 * sizeof(opentelemetry_http_header));
+                if (headers == NULL)
+                    return NGX_CONF_ERROR;
+
+                headers_cap = 2;
+            } else if (headers_len == headers_cap) {
+                opentelemetry_http_header *old_headers = headers;
+                headers_cap *= 2;
+                headers = (opentelemetry_http_header*)ngx_palloc(cf->pool, headers_cap * sizeof(opentelemetry_http_header));
+                if (headers == NULL)
+                    return NGX_CONF_ERROR;
+
+                size_t itr;
+                for (itr = 0; itr < headers_len; itr++) {
+                    headers[itr] = old_headers[itr];
+                }
+            }
+
+            headers[headers_len].name.len = header_name_len;
+            headers[headers_len].name.ptr = token;
+            headers[headers_len].value.len = header_value_len;
+            headers[headers_len].value.ptr = header_value_begin;
+
+            headers_len++;
+
+        } else if (ngx_strcmp(token, "max_concurrent_requests") == 0) {
+            ngx_int_t max_concurrent_requests = ngx_atoi((u_char*)value_begin, value_len);
+            if (max_concurrent_requests == NGX_ERROR) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid max_concurrent_requests exporter option");
+                return NGX_CONF_ERROR;
+            }
+            otlp_http_options->max_concurrent_requests = (size_t)max_concurrent_requests;
+        } else if (ngx_strcmp(token, "max_requests_per_connection") == 0) {
+            ngx_int_t max_requests_per_connection = ngx_atoi((u_char*)value_begin, value_len);
+            if (max_requests_per_connection == NGX_ERROR) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid max_requests_per_connection exporter option");
+                return NGX_CONF_ERROR;
+            }
+            otlp_http_options->max_requests_per_connection = (size_t)max_requests_per_connection;
+        } else if (ngx_strcmp(token, "timeout") == 0) {
+            ngx_int_t timeout = ngx_atoi((u_char*)value_begin, value_len);
+            if (timeout == NGX_ERROR) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid timeout exporter option");
+                return NGX_CONF_ERROR;
+            }
+            otlp_http_options->timeout.tv_sec = timeout / 1000;
+            otlp_http_options->timeout.tv_nsec = (timeout % 1000) * 1000000;
+            otlp_http_options->timeout_set = true;
+        } else if (ngx_strcmp(token, "use_json_name") == 0) {
+            if (ngx_strcmp(value_begin, "true") == 0) {
+                otlp_http_options->use_json_name = true;
+            } else if (ngx_strcmp(value_begin, "false") == 0) {
+                otlp_http_options->use_json_name = false;
+            } else {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid use_json_name exporter option");
+                return NGX_CONF_ERROR;
+            }
+        } else if (ngx_strcmp(token, "console_debug") == 0) {
+            if (ngx_strcmp(value_begin, "true") == 0) {
+                otlp_http_options->console_debug = true;
+            } else if (ngx_strcmp(value_begin, "false") == 0) {
+                otlp_http_options->console_debug = false;
+            } else {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid console_debug exporter option");
+                return NGX_CONF_ERROR;
+            }
+        } else {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid exporter option: \"%s\"", token);
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    if (!otlp_http_options->url) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "exporter url is missed");
+        return NGX_CONF_ERROR;
+    }
+
+    if (headers_len) {
+       otlp_http_options->nheaders = headers_len;
+       otlp_http_options->headers = headers;
+       otlp_http_options->headers_set = true;
+    }
+
+    return NGX_CONF_OK;
+}
+
+static char*
+ngx_http_set_opentelemetry_batch_processor_options(ngx_conf_t *cf, opentelemetry_processor_batch_options *batch_options)
+{
+    batch_options->max_queue_size = NGX_HTTP_OPENTELEMETRY_PROCESSOR_BATCH_OPTION_MAX_QUEUE_SIZE_DEFAULT;
+    batch_options->schedule_delay_millis = NGX_HTTP_OPENTELEMETRY_PROCESSOR_BATCH_OPTION_SCHEDULE_DELAY_MILLIS_DEFAULT;
+    batch_options->max_export_batch_size = NGX_HTTP_OPENTELEMETRY_PROCESSOR_BATCH_OPTION_MAX_EXPORT_BATCH_SIZE_DEFAULT;
+
+    if (cf->args->nelts <= 4)
+        return NGX_CONF_OK;
+
+    char *token, *saveptr;
+    for (token = strtok_r((char*)((ngx_str_t*)cf->args->elts)[4].data, "|", &saveptr); token; token = strtok_r(NULL, "|", &saveptr)) {
+        char *equals = ngx_strchr(token, '=');
+        if (!equals) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid processor options");
+            return NGX_CONF_ERROR;
+        }
+        *equals = '\0';
+
+        char *value_begin = equals + 1;
+        size_t value_len = strlen(value_begin);
+        if (equals - token < 1 || value_len < 1) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid processor options");
+            return NGX_CONF_ERROR;
+        }
+
+        if (ngx_strcmp(token, "max_queue_size") == 0) {
+            ngx_int_t max_queue_size = ngx_atoi((u_char*)value_begin, value_len);
+            if (max_queue_size == NGX_ERROR) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid max_queue_size processor option");
+                return NGX_CONF_ERROR;
+            }
+            batch_options->max_queue_size = (size_t)max_queue_size;
+        } else if (ngx_strcmp(token, "schedule_delay_millis") == 0) {
+            ngx_int_t schedule_delay_millis = ngx_atoi((u_char*)value_begin, value_len);
+            if (schedule_delay_millis == NGX_ERROR) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid schedule_delay_millis processor option");
+                return NGX_CONF_ERROR;
+            }
+            batch_options->schedule_delay_millis = (int64_t)schedule_delay_millis;
+        } else if (ngx_strcmp(token, "max_export_batch_size") == 0) {
+            ngx_int_t max_export_batch_size = ngx_atoi((u_char*)value_begin, value_len);
+            if (max_export_batch_size == NGX_ERROR) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid max_export_batch_size processor option");
+                return NGX_CONF_ERROR;
+            }
+            batch_options->max_export_batch_size = (size_t)max_export_batch_size;
+        } else {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid processor option: \"%s\"", token);
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    return NGX_CONF_OK;
+}
+
+static char*
+ngx_http_check_opentelemetry_exporter(ngx_conf_t *cf, ngx_http_opentelemetry_main_conf_t *omcf)
+{
+    opentelemetry_exporter *exporter;
+    if (omcf->exporter_type == NGX_HTTP_OPENTELEMETRY_EXPORTER_TYPE_JAEGER)
+        exporter = opentelemetry_exporter_jaeger_create(&omcf->exporter_options.jaeger);
+    else if (omcf->exporter_type == NGX_HTTP_OPENTELEMETRY_EXPORTER_TYPE_OTLP_HTTP)
+        exporter = opentelemetry_exporter_otlp_http_create(&omcf->exporter_options.otlp_http);
+
+    if (exporter == NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "opentelemetry exporter type %ud creation failed", omcf->exporter_type);
+        return NGX_CONF_ERROR;
+    }
+
+    opentelemetry_processor *processor;
+    if (omcf->processor_type == NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_SIMPLE)
+        processor = opentelemetry_processor_simple(exporter);
+    else if (omcf->processor_type == NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_BATCH)
+        processor = opentelemetry_processor_batch(exporter, &omcf->processor_options.batch_options);
+
+    if (processor == NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "opentelemetry processor type %ud creation failed", omcf->processor_type);
+        opentelemetry_exporter_destroy(exporter);
+        return NGX_CONF_ERROR;
+    }
+
+    opentelemetry_processor_destroy(processor);
+    return NGX_CONF_OK;
+}
+
+static char*
 ngx_http_set_opentelemetry_exporter(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_opentelemetry_main_conf_t *omcf = conf;
+    ngx_str_t *values = cf->args->elts;
 
     if (omcf->exporter_type != NGX_HTTP_OPENTELEMETRY_EXPORTER_TYPE_NONE)
         return "is duplicate";
 
-    /*
-        TODO:
-        - read exporter name & exporter options, set omcf->processor_kind appropriately
-        - create and free exporter & processor (when custom processor options is set) as a test
-        - return "is invalid" on errors
-    */
+    char *res;
+    if (ngx_strcmp(values[1].data, "jaeger") == 0) {
+        omcf->exporter_type = NGX_HTTP_OPENTELEMETRY_EXPORTER_TYPE_JAEGER;
+        res = ngx_http_set_opentelemetry_jaeger_exporter_options(cf, &omcf->exporter_options.jaeger);
+    } else if (ngx_strcmp(values[1].data, "otlp_http") == 0) {
+        omcf->exporter_type = NGX_HTTP_OPENTELEMETRY_EXPORTER_TYPE_OTLP_HTTP;
+        res = ngx_http_set_opentelemetry_otlp_http_exporter_options(cf, &omcf->exporter_options.otlp_http);
+    } else {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "unknown exporter type: \"%V\"", &values[1]);
+        return NGX_CONF_ERROR;
+    }
 
-    omcf->exporter_type = NGX_HTTP_OPENTELEMETRY_EXPORTER_TYPE_JAEGER;
-    omcf->exporter_options.jaeger.format = OPENTELEMETRY_C_EXPORTER_JAEGER_FORMAT_THRIFT_UDP_COMPACT;
-    omcf->exporter_options.jaeger.endpoint = "127.0.0.1";
-    omcf->exporter_options.jaeger.server_port = 6831;
+    if (res != NGX_CONF_OK)
+        return res;
 
-    omcf->processor_type = NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_BATCH;
-    omcf->processor_options.batch_options.max_queue_size = 2048;
-    omcf->processor_options.batch_options.schedule_delay_millis = 5000;
-    omcf->processor_options.batch_options.max_export_batch_size = 512;
+    if (cf->args->nelts > 3) {
+        if (ngx_strcmp(values[3].data, "batch") == 0) {
+            omcf->processor_type = NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_BATCH;
+        } else if (ngx_strcmp(values[3].data, "simple") == 0) {
+            omcf->processor_type = NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_SIMPLE;
+        } else {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "unknown processor type: \"%V\"", &values[1]);
+            return NGX_CONF_ERROR;
+        }
+    } else {
+        omcf->processor_type = NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_DEFAULT;
+    }
 
-    return NGX_CONF_OK;
+    if (omcf->processor_type == NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_BATCH) {
+        res = ngx_http_set_opentelemetry_batch_processor_options(cf, &omcf->processor_options.batch_options);
+        if (res != NGX_CONF_OK)
+            return res;
+    } else if (cf->args->nelts > 4) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "only batch processor has processor options");
+        return NGX_CONF_ERROR;
+    }
+
+    return ngx_http_check_opentelemetry_exporter(cf, omcf);
 }
 
 static char*
