@@ -26,10 +26,7 @@ typedef struct {
         opentelemetry_exporter_otlp_http_options otlp_http;
     } exporter_options;
     union {
-        struct {
-            bool is_default;
-            opentelemetry_processor_batch_options options;
-        } batch;
+        opentelemetry_processor_batch_options batch_options;
     } processor_options;
     ngx_str_t tracestate_debug_key;
     ngx_str_t tracestate_debug_value;
@@ -232,10 +229,7 @@ ngx_http_opentelemetry_init_process(ngx_cycle_t *cycle)
         processor = opentelemetry_processor_simple(exporter);
         break;
     case NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_BATCH:
-        if (omcf->processor_options.batch.is_default)
-            processor = opentelemetry_processor_batch(exporter, NULL);
-        else
-            processor = opentelemetry_processor_batch(exporter, &omcf->processor_options.batch.options);
+        processor = opentelemetry_processor_batch(exporter, &omcf->processor_options.batch_options);
         break;
     default:
         ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "unknown opentelemetry processor type %ud", omcf->processor_type);
@@ -638,7 +632,9 @@ ngx_http_set_opentelemetry_exporter(ngx_conf_t *cf, ngx_command_t *cmd, void *co
     omcf->exporter_options.jaeger.server_port = 6831;
 
     omcf->processor_type = NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_BATCH;
-    omcf->processor_options.batch.is_default = true;
+    omcf->processor_options.batch_options.max_queue_size = 2048;
+    omcf->processor_options.batch_options.schedule_delay_millis = 5000;
+    omcf->processor_options.batch_options.max_export_batch_size = 512;
 
     return NGX_CONF_OK;
 }
