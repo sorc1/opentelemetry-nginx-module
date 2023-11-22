@@ -16,6 +16,7 @@
 #define NGX_HTTP_OPENTELEMETRY_PROCESSOR_BATCH_OPTION_MAX_EXPORT_BATCH_SIZE_DEFAULT 512
 
 static const opentelemetry_string ngx_http_opentelemetry_request_name = OPENTELEMETRY_CSTR("request");
+static const opentelemetry_string ngx_http_opentelemetry_request_header_attribute_prefix = OPENTELEMETRY_CSTR("http.request.header.");
 
 typedef enum ngx_http_opentelemetry_exporter_type {
     NGX_HTTP_OPENTELEMETRY_EXPORTER_TYPE_NONE = 0,
@@ -425,7 +426,85 @@ ngx_http_opentelemetry_log_x_request_id(ngx_http_request_t *r, opentelemetry_spa
     }
 }
 
-static void
+typedef struct ngx_http_opentelemetry_headers_list {
+    ngx_str_t header_name;
+    ngx_array_t header_values;
+} ngx_http_opentelemetry_headers_list;
+
+static ngx_int_t
+ngx_http_opentelemetry_set_request_headers_attributes(ngx_http_request_t *r, opentelemetry_span *span)
+{
+    ngx_http_opentelemetry_headers_list *headers_list;
+    ngx_array_t                          headers;
+    ngx_table_elt_t                     *header;
+    ngx_list_part_t                     *part;
+    ngx_uint_t                           i, j;
+
+    if (ngx_array_init(&headers, r->pool, 0, sizeof(ngx_http_opentelemetry_headers_list)) != NGX_OK)
+        return NGX_ERROR;
+
+    part = &r->headers_in.headers.part;
+    header = part->elts;
+    for (i = 0; /* void */; i++) {
+        if (i >= part->nelts) {
+            if (part->next == NULL)
+                break;
+
+            part = part->next;
+            header = part->elts;
+            i = 0;
+        }
+
+        if (header[i].hash == 0)
+            continue;
+
+        for (j = 0; j < headers.nelts; j++) {
+            headers_list = &((ngx_http_opentelemetry_headers_list*)headers.elts)[j];
+            if (ngx_strncmp(headers_list->header_name.data, header[i].lowcase_key, header[i].key.len) == 0)
+                break;
+        }
+
+        if (j == headers.nelts) {
+            headers_list = ngx_array_push(&headers);
+            if (headers_list == NULL)
+                return NGX_ERROR;
+
+            headers_list->header_name.data = header[i].lowcase_key;
+            headers_list->header_name.len = header[i].key.len;
+            if (ngx_array_init(&headers_list->header_values, r->pool, 1, sizeof(opentelemetry_string)) != NGX_OK)
+                return NGX_ERROR;
+        }
+
+        opentelemetry_string *header_value = ngx_array_push(&headers_list->header_values);
+        if (header_value == NULL)
+            return NGX_ERROR;
+
+        header_value->len = header[i].value.len;
+        header_value->ptr = (const char*)header[i].value.data;
+    }
+
+    for (i = 0; i < headers.nelts; i++) {
+        headers_list = &((ngx_http_opentelemetry_headers_list*)headers.elts)[i];
+
+        size_t header_name_len = ngx_http_opentelemetry_request_header_attribute_prefix.len + headers_list->header_name.len;
+        char *header_name = (char *)ngx_palloc(r->pool, header_name_len);
+        if (header_name == NULL)
+            return NGX_ERROR;
+
+        ngx_memcpy(header_name, ngx_http_opentelemetry_request_header_attribute_prefix.ptr, ngx_http_opentelemetry_request_header_attribute_prefix.len);
+        ngx_memcpy(header_name + ngx_http_opentelemetry_request_header_attribute_prefix.len, headers_list->header_name.data, headers_list->header_name.len);
+
+        opentelemetry_attribute attribute = OPENTELEMETRY_ATTRIBUTE(
+            OPENTELEMETRY_STR(header_name, header_name_len),
+            OPENTELEMETRY_VALUE_ARRAY_STR(headers_list->header_values.elts, headers_list->header_values.nelts)
+        );
+        opentelemetry_span_set_attribute(span, &attribute);
+    }
+
+    return NGX_OK;
+}
+
+static ngx_int_t
 ngx_http_opentelemetry_request_log(ngx_http_request_t *r, opentelemetry_span *span, bool log_x_request_id)
 {
     opentelemetry_attribute uri = OPENTELEMETRY_ATTRIBUTE_STR("uri", (char*)r->uri.data, r->uri.len);
@@ -435,8 +514,14 @@ ngx_http_opentelemetry_request_log(ngx_http_request_t *r, opentelemetry_span *sp
         opentelemetry_attribute args = OPENTELEMETRY_ATTRIBUTE_STR("args", (char*)r->args.data, r->args.len);
         opentelemetry_span_set_attribute(span, &args);
     }
+
+    if (ngx_http_opentelemetry_set_request_headers_attributes(r, span) != NGX_OK)
+        return NGX_ERROR;
+
     if (log_x_request_id)
         ngx_http_opentelemetry_log_x_request_id(r, span);
+
+    return NGX_OK;
 }
 
 static const char *ngx_http_opentelemetry_parent_header_value(const char *name, size_t name_len, size_t *value_len, void *arg)
@@ -516,7 +601,8 @@ ngx_http_opentelemetry_handler(ngx_http_request_t *r, ngx_uint_t phase)
 
         if (rc != NGX_DECLINED) {
             ctx = ngx_http_opentelemetry_get_module_ctx(r);
-            ngx_http_opentelemetry_request_log(r, ctx->request_span, log_x_request_id);
+            if (ngx_http_opentelemetry_request_log(r, ctx->request_span, log_x_request_id) != NGX_OK)
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
             return rc == NGX_OK ? NGX_DECLINED : rc;
         }
     }
@@ -558,7 +644,8 @@ ngx_http_opentelemetry_handler(ngx_http_request_t *r, ngx_uint_t phase)
         ctx->request_span = opentelemetry_span_start(tracer, &ngx_http_opentelemetry_request_name, NULL);
         if (ctx->request_span != NULL) {
             ctx->tracing_level = tracing_level;
-            ngx_http_opentelemetry_request_log(r, ctx->request_span, log_x_request_id);
+            if (ngx_http_opentelemetry_request_log(r, ctx->request_span, log_x_request_id) != NGX_OK)
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
 
             if (tracing_level > 0)
                 opentelemetry_span_set_attribute(ctx->request_span, &(opentelemetry_attribute)OPENTELEMETRY_ATTRIBUTE_BOOL("user", true));
