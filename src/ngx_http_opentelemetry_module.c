@@ -547,6 +547,8 @@ ngx_http_opentelemetry_handler(ngx_http_request_t *r, ngx_uint_t phase)
     }
     if (tracing_level == 0 && olcf->sample > 0) {
         sample = (ngx_random() / (double)((uint64_t)RAND_MAX + 1)) < olcf->sample;
+        if (sample)
+            tracing_level = 1;
     }
 
     ctx = ngx_http_opentelemetry_add_module_ctx(r);
@@ -554,16 +556,16 @@ ngx_http_opentelemetry_handler(ngx_http_request_t *r, ngx_uint_t phase)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    if (tracing_level > 0 || sample) {
+    if (tracing_level > 0) {
         ctx->request_span = opentelemetry_span_start(tracer, &ngx_http_opentelemetry_request_name, NULL);
         if (ctx->request_span != NULL) {
             ctx->tracing_level = tracing_level;
             ngx_http_opentelemetry_request_log(r, ctx->request_span, log_x_request_id);
 
-            if (tracing_level > 0)
-                opentelemetry_span_set_attribute(ctx->request_span, &(opentelemetry_attribute)OPENTELEMETRY_ATTRIBUTE_BOOL("user", true));
-            else
+            if (sample)
                 opentelemetry_span_set_attribute(ctx->request_span, &(opentelemetry_attribute)OPENTELEMETRY_ATTRIBUTE_BOOL("sample", true));
+            else
+                opentelemetry_span_set_attribute(ctx->request_span, &(opentelemetry_attribute)OPENTELEMETRY_ATTRIBUTE_BOOL("user", true));
         }
     }
 
