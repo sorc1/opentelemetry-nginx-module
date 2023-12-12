@@ -10,7 +10,6 @@
 #include <stdbool.h>
 #include <inttypes.h>
 #include <stdlib.h>
-#include <cjaeger.h>
 
 static char ngx_http_lua_spans_key;
 
