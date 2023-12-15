@@ -745,11 +745,11 @@ ngx_http_set_opentelemetry_otlp_http_exporter_options(ngx_conf_t *cf, openteleme
                                    "invalid json_bytes_mapping exporter option");
                 return NGX_CONF_ERROR;
             }
-        } else if (ngx_strcmp(token, "headers") == 0) {
+        } else if (ngx_strcmp(token, "header") == 0) {
             char *colon = strchr(value_begin, ':');
             if (!colon) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                                   "invalid headers exporter options");
+                                   "invalid header exporter options");
                 return NGX_CONF_ERROR;
             }
             *colon = '\0';
@@ -762,7 +762,7 @@ ngx_http_set_opentelemetry_otlp_http_exporter_options(ngx_conf_t *cf, openteleme
 
             if (header_name_len < 1 || header_value_len < 1) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                                   "invalid headers exporter options");
+                                   "invalid header exporter options");
                 return NGX_CONF_ERROR;
             }
 
