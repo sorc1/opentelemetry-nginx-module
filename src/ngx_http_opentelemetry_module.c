@@ -440,7 +440,7 @@ ngx_http_opentelemetry_set_request_headers_attributes(ngx_http_request_t *r, ope
     ngx_list_part_t                     *part;
     ngx_uint_t                           i, j;
 
-    if (ngx_array_init(&headers, r->pool, 0, sizeof(ngx_http_opentelemetry_headers_list)) != NGX_OK)
+    if (ngx_array_init(&headers, r->pool, 1, sizeof(ngx_http_opentelemetry_headers_list)) != NGX_OK)
         return NGX_ERROR;
 
     part = &r->headers_in.headers.part;
