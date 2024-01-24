@@ -55,6 +55,7 @@ typedef struct {
 #if (NGX_PCRE)
     ngx_array_t              *header_mask;
 #endif
+    ngx_flag_t                log_headers;
 } ngx_http_opentelemetry_loc_conf_t;
 
 typedef struct {
@@ -174,6 +175,13 @@ static ngx_command_t ngx_http_opentelemetry_commands[] = {
       ngx_http_set_opentelemetry_header_mask,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_opentelemetry_loc_conf_t, header_mask),
+      NULL },
+
+    { ngx_string("opentelemetry_log_headers"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_opentelemetry_loc_conf_t, log_headers),
       NULL },
 
       ngx_null_command
@@ -372,6 +380,8 @@ ngx_http_opentelemetry_create_loc_conf(ngx_conf_t *cf)
     olcf->header_mask = NGX_CONF_UNSET_PTR;
 #endif
 
+    olcf->log_headers = NGX_CONF_UNSET;
+
     return olcf;
 }
 
@@ -399,6 +409,8 @@ ngx_http_opentelemetry_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 #if (NGX_PCRE)
     ngx_conf_merge_ptr_value(olcf->header_mask, prev->header_mask, NULL);
 #endif
+
+    ngx_conf_merge_value(olcf->log_headers, prev->log_headers, 0);
 
     return NGX_CONF_OK;
 }
@@ -596,7 +608,8 @@ ngx_http_opentelemetry_set_request_headers_attributes(ngx_http_request_t *r, ope
 static ngx_int_t
 ngx_http_opentelemetry_request_log(ngx_http_request_t *r, opentelemetry_span *span, bool log_x_request_id)
 {
-    opentelemetry_attribute uri = OPENTELEMETRY_ATTRIBUTE_STR("uri", (char*)r->uri.data, r->uri.len);
+    ngx_http_opentelemetry_loc_conf_t *olcf = ngx_http_get_module_loc_conf(r, ngx_http_opentelemetry_module);
+    opentelemetry_attribute            uri = OPENTELEMETRY_ATTRIBUTE_STR("uri", (char*)r->uri.data, r->uri.len);
 
     opentelemetry_span_set_attribute(span, &uri);
     if (r->args.len != 0) {
@@ -604,7 +617,7 @@ ngx_http_opentelemetry_request_log(ngx_http_request_t *r, opentelemetry_span *sp
         opentelemetry_span_set_attribute(span, &args);
     }
 
-    if (ngx_http_opentelemetry_set_request_headers_attributes(r, span) != NGX_OK)
+    if (olcf->log_headers && ngx_http_opentelemetry_set_request_headers_attributes(r, span) != NGX_OK)
         return NGX_ERROR;
 
     if (log_x_request_id)
