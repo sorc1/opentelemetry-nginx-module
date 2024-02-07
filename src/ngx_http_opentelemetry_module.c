@@ -512,7 +512,7 @@ ngx_http_opentelemetry_set_request_headers_attributes(ngx_http_request_t *r, ope
             if (headers_list->header_name.len != header[i].key.len)
                 continue;
 
-            if (ngx_strncmp(headers_list->header_name.data, header[i].lowcase_key, header[i].key.len) == 0)
+            if (ngx_strncmp(headers_list->header_name.data, header[i].lowcase_key, headers_list->header_name.len) == 0)
                 break;
         }
 
@@ -544,7 +544,7 @@ ngx_http_opentelemetry_set_request_headers_attributes(ngx_http_request_t *r, ope
             if (header_mask_list->header_name.len != header[i].key.len)
                 continue;
 
-            if (ngx_strncmp(header_mask_list->header_name.data, header[i].key.data, header_mask_list->header_name.len) != 0)
+            if (ngx_strncmp(header_mask_list->header_name.data, header[i].lowcase_key, header_mask_list->header_name.len) != 0)
                 continue;
 
             ngx_str_t header_value_new = header[i].value;
@@ -1273,6 +1273,8 @@ ngx_http_set_opentelemetry_header_mask(ngx_conf_t *cf, ngx_command_t *cmd, void 
         if (*parray == NULL)
             return NGX_CONF_ERROR;
     }
+
+    ngx_strlow(values[1].data, values[1].data, values[1].len);
 
     for (i = 0; i < (*parray)->nelts; i++) {
         header_mask_list = &((ngx_http_opentelemetry_header_mask_list*)(*parray)->elts)[i];
