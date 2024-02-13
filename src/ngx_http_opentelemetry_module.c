@@ -1109,11 +1109,18 @@ static char*
 ngx_http_check_opentelemetry_exporter(ngx_conf_t *cf, ngx_http_opentelemetry_main_conf_t *omcf)
 {
     opentelemetry_exporter *exporter;
-    if (omcf->exporter_type == NGX_HTTP_OPENTELEMETRY_EXPORTER_TYPE_JAEGER)
+    switch (omcf->exporter_type) {
+    case NGX_HTTP_OPENTELEMETRY_EXPORTER_TYPE_JAEGER:
         exporter = opentelemetry_exporter_jaeger_create(&omcf->exporter_options.jaeger);
-    else if (omcf->exporter_type == NGX_HTTP_OPENTELEMETRY_EXPORTER_TYPE_OTLP_HTTP)
+        break;
+    case NGX_HTTP_OPENTELEMETRY_EXPORTER_TYPE_OTLP_HTTP:
         exporter = opentelemetry_exporter_otlp_http_create(&omcf->exporter_options.otlp_http);
-
+        break;
+    default:
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                      "unknown opentelemetry exporter type %ud", omcf->exporter_type);
+        return NGX_CONF_ERROR;
+    }
     if (exporter == NULL) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "opentelemetry exporter type %ud creation failed", omcf->exporter_type);
@@ -1121,11 +1128,18 @@ ngx_http_check_opentelemetry_exporter(ngx_conf_t *cf, ngx_http_opentelemetry_mai
     }
 
     opentelemetry_processor *processor;
-    if (omcf->processor_type == NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_SIMPLE)
+    switch (omcf->processor_type) {
+    case NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_SIMPLE:
         processor = opentelemetry_processor_simple(exporter);
-    else if (omcf->processor_type == NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_BATCH)
+        break;
+    case NGX_HTTP_OPENTELEMETRY_PROCESSOR_TYPE_BATCH:
         processor = opentelemetry_processor_batch(exporter, &omcf->processor_options.batch_options);
-
+        break;
+    default:
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "unknown opentelemetry processor type %ud", omcf->processor_type);
+        return NGX_CONF_ERROR;
+    }
     if (processor == NULL) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "opentelemetry processor type %ud creation failed", omcf->processor_type);
