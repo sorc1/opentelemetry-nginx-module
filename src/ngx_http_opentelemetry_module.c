@@ -54,6 +54,7 @@ typedef struct {
     ngx_flag_t                parent;
 #if (NGX_PCRE)
     ngx_array_t              *header_mask;
+    ngx_array_t              *mask;
 #endif
     ngx_flag_t                log_headers;
 } ngx_http_opentelemetry_loc_conf_t;
@@ -67,12 +68,17 @@ typedef struct {
 typedef struct {
     ngx_http_regex_t         *regex;
     ngx_http_complex_value_t  mask_name;
-} ngx_http_opentelemetry_header_mask;
+} ngx_http_opentelemetry_mask;
 
 typedef struct {
     ngx_str_t                 header_name;
     ngx_array_t              *mask_list;
-} ngx_http_opentelemetry_header_mask_list;
+} ngx_http_opentelemetry_mask_list;
+
+typedef struct {
+    ngx_str_t                 rule_name;
+    ngx_array_t              *mask_rule;
+} ngx_http_opentelemetry_mask_rule;
 #endif
 
 static ngx_int_t ngx_http_opentelemetry_init_process(ngx_cycle_t *cycle);
@@ -90,6 +96,7 @@ static char *ngx_http_set_opentelemetry_exporter(ngx_conf_t *cf, ngx_command_t *
 static char *ngx_http_set_opentelemetry_tracestate_debug(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_set_opentelemetry_from(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_set_opentelemetry_header_mask(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *ngx_http_set_opentelemetry_mask(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_set_opentelemetry_variable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_set_opentelemetry_sample(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static ngx_int_t ngx_http_opentelemetry_header_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
@@ -175,6 +182,13 @@ static ngx_command_t ngx_http_opentelemetry_commands[] = {
       ngx_http_set_opentelemetry_header_mask,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_opentelemetry_loc_conf_t, header_mask),
+      NULL },
+
+    { ngx_string("opentelemetry_mask"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE4,
+      ngx_http_set_opentelemetry_mask,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_opentelemetry_loc_conf_t, mask),
       NULL },
 
     { ngx_string("opentelemetry_log_headers"),
@@ -378,6 +392,7 @@ ngx_http_opentelemetry_create_loc_conf(ngx_conf_t *cf)
 
 #if (NGX_PCRE)
     olcf->header_mask = NGX_CONF_UNSET_PTR;
+    olcf->mask = NGX_CONF_UNSET_PTR;
 #endif
 
     olcf->log_headers = NGX_CONF_UNSET;
@@ -408,6 +423,7 @@ ngx_http_opentelemetry_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
 #if (NGX_PCRE)
     ngx_conf_merge_ptr_value(olcf->header_mask, prev->header_mask, NULL);
+    ngx_conf_merge_ptr_value(olcf->mask, prev->mask, NULL);
 #endif
 
     ngx_conf_merge_value(olcf->log_headers, prev->log_headers, 0);
@@ -469,6 +485,80 @@ ngx_http_opentelemetry_log_x_request_id(ngx_http_request_t *r, opentelemetry_spa
 
         opentelemetry_span_set_attribute(span, &x_request_id);
     }
+}
+
+ngx_array_t *
+ngx_http_opentelemetry_get_mask_rule(ngx_http_request_t *r, const opentelemetry_string *rule_name)
+{
+#if (NGX_PCRE)
+    ngx_http_opentelemetry_loc_conf_t      *olcf = ngx_http_get_module_loc_conf(r, ngx_http_opentelemetry_module);
+    ngx_uint_t                              i;
+
+    if (olcf->mask != NULL)
+    {
+        for (i = 0; i < olcf->mask->nelts; i++)
+        {
+            ngx_http_opentelemetry_mask_rule *mask_rule = &((ngx_http_opentelemetry_mask_rule*)olcf->mask->elts)[i];
+            if (mask_rule->rule_name.len == rule_name->len &&
+                ngx_strncmp(mask_rule->rule_name.data, rule_name->ptr, rule_name->len) == 0) {
+                return mask_rule->mask_rule;
+            }
+        }
+    }
+#endif
+    return NULL;
+}
+
+ngx_array_t *
+ngx_http_opentelemetry_get_rule_list(ngx_array_t *rule_list, const opentelemetry_string *name)
+{
+#if (NGX_PCRE)
+    ngx_uint_t                              i;
+    if (rule_list != NULL) {
+        for (i = 0; i < rule_list->nelts; i++) {
+            ngx_http_opentelemetry_mask_list *mask_list = &((ngx_http_opentelemetry_mask_list*)rule_list->elts)[i];
+            if (mask_list->header_name.len == name->len &&
+                ngx_strncasecmp(mask_list->header_name.data, (u_char *)name->ptr, name->len) == 0) {
+                return mask_list->mask_list;
+            }
+        }
+    }
+#endif
+    return NULL;
+}
+
+ngx_int_t
+ngx_http_apply_header_mask_list(ngx_http_request_t *r, ngx_array_t *mask_list, ngx_str_t *header_value) {
+#if (NGX_PCRE)
+    ngx_uint_t itr2;
+    for (itr2 = 0; itr2 < mask_list->nelts; itr2++) {
+        ngx_http_opentelemetry_mask *header_mask = &((ngx_http_opentelemetry_mask*)mask_list->elts)[itr2];
+
+        ngx_int_t rc = ngx_http_regex_exec(r, header_mask->regex, header_value);
+        if (rc == NGX_DECLINED)
+            continue;
+        else if (rc == NGX_ERROR)
+            return NGX_ERROR;
+
+        ngx_str_t mask_name;
+        if (ngx_http_complex_value(r, &header_mask->mask_name, &mask_name) != NGX_OK)
+            return NGX_ERROR;
+
+        size_t header_value_new_len = header_value->len - (r->captures[1] - r->captures[0]) + mask_name.len;
+        u_char *header_value_new_data = (u_char*)ngx_palloc(r->pool, header_value_new_len);
+        if (header_value_new_data == NULL)
+            return NGX_ERROR;
+        u_char *header_value_new_data_begin = header_value_new_data;
+
+        header_value_new_data = ngx_copy(header_value_new_data, header_value->data, r->captures[0]);
+        header_value_new_data = ngx_copy(header_value_new_data, mask_name.data, mask_name.len);
+        ngx_memcpy(header_value_new_data, header_value->data + r->captures[1], header_value->len - r->captures[1]);
+        header_value->len = header_value_new_len;
+        header_value->data = header_value_new_data_begin;
+        break;
+    }
+#endif
+    return NGX_OK;
 }
 
 typedef struct ngx_http_opentelemetry_headers_list {
@@ -540,7 +630,7 @@ ngx_http_opentelemetry_set_request_headers_attributes(ngx_http_request_t *r, ope
 
         ngx_uint_t itr;
         for (itr = 0; itr < olcf->header_mask->nelts; itr++) {
-            ngx_http_opentelemetry_header_mask_list *header_mask_list = &((ngx_http_opentelemetry_header_mask_list*)olcf->header_mask->elts)[itr];
+            ngx_http_opentelemetry_mask_list *header_mask_list = &((ngx_http_opentelemetry_mask_list*)olcf->header_mask->elts)[itr];
             if (header_mask_list->header_name.len != header[i].key.len)
                 continue;
 
@@ -548,33 +638,9 @@ ngx_http_opentelemetry_set_request_headers_attributes(ngx_http_request_t *r, ope
                 continue;
 
             ngx_str_t header_value_new = header[i].value;
-            ngx_uint_t itr2;
-            for (itr2 = 0; itr2 < header_mask_list->mask_list->nelts; itr2++) {
-                ngx_http_opentelemetry_header_mask *header_mask = &((ngx_http_opentelemetry_header_mask*)header_mask_list->mask_list->elts)[itr2];
-
-                ngx_int_t rc = ngx_http_regex_exec(r, header_mask->regex, &header_value_new);
-                if (rc == NGX_DECLINED)
-                    continue;
-                else if (rc == NGX_ERROR)
-                    return NGX_ERROR;
-
-                ngx_str_t mask_name;
-                if (ngx_http_complex_value(r, &header_mask->mask_name, &mask_name) != NGX_OK)
-                    return NGX_ERROR;
-
-                size_t header_value_new_len = header_value_new.len - (r->captures[1] - r->captures[0]) + mask_name.len;
-                u_char *header_value_new_data = (u_char*)ngx_palloc(r->pool, header_value_new_len);
-                if (header_value_new_data == NULL)
-                    return NGX_ERROR;
-                u_char *header_value_new_data_begin = header_value_new_data;
-
-                header_value_new_data = ngx_copy(header_value_new_data, header_value_new.data, r->captures[0]);
-                header_value_new_data = ngx_copy(header_value_new_data, mask_name.data, mask_name.len);
-                ngx_memcpy(header_value_new_data, header_value_new.data + r->captures[1], header_value_new.len - r->captures[1]);
-                header_value_new.len = header_value_new_len;
-                header_value_new.data = header_value_new_data_begin;
-            }
-
+            ngx_int_t rc = ngx_http_apply_header_mask_list(r, header_mask_list->mask_list, &header_value_new);
+            if (rc != NGX_OK)
+                return rc;
             header_value->len = header_value_new.len;
             header_value->ptr = (const char*)header_value_new.data;
 
@@ -1268,22 +1334,64 @@ ngx_http_set_opentelemetry_from(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_OK;
 }
 
+ngx_http_opentelemetry_mask*
+ngx_http_opentelemetry_add_mask(ngx_conf_t *cf, ngx_array_t *mask_list_array, const ngx_str_t *name)
+{
+    ngx_http_opentelemetry_mask_list *mask_list = ngx_array_push(mask_list_array);
+    mask_list->header_name = *name;
+    mask_list->mask_list = ngx_array_create(cf->pool, 1, sizeof(ngx_http_opentelemetry_mask));
+    if (mask_list->mask_list == NULL)
+        return NULL;
+    return (ngx_http_opentelemetry_mask*)ngx_array_push(mask_list->mask_list);
+}
+
+static char*
+ngx_http_opentelemetry_set_mask(ngx_conf_t *cf, ngx_http_opentelemetry_mask *mask, const ngx_str_t *pattern, const ngx_str_t *value)
+{
+    ngx_regex_compile_t                      rc;
+    u_char                                   errstr[NGX_MAX_CONF_ERRSTR];
+    ngx_http_core_main_conf_t               *cmcf;
+    ngx_http_compile_complex_value_t         ccv;
+
+    ngx_memzero(&rc, sizeof(rc));
+    rc.pattern = *pattern;
+    rc.err.len = NGX_MAX_CONF_ERRSTR;
+    rc.err.data = errstr;
+
+    mask->regex = ngx_http_regex_compile(cf, &rc);
+    if (mask->regex == NULL)
+        return NGX_CONF_ERROR;
+
+    if (mask->regex->ncaptures == 0) {
+        mask->regex->ncaptures = 1;
+        cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
+        if (cmcf->ncaptures == 0)
+            cmcf->ncaptures = 1;
+    }
+
+    ngx_memzero(&ccv, sizeof(ccv));
+    ccv.cf = cf;
+    ccv.value = value;
+    ccv.complex_value = &mask->mask_name;
+
+    if (ngx_http_compile_complex_value(&ccv) != NGX_OK)
+        return NGX_CONF_ERROR;
+
+    return NGX_CONF_OK;
+}
+
 static char*
 ngx_http_set_opentelemetry_header_mask(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
 #if (NGX_PCRE)
     ngx_array_t                            **parray = conf + cmd->offset;
     ngx_str_t                               *values = cf->args->elts;
-    ngx_regex_compile_t                      rc;
-    u_char                                   errstr[NGX_MAX_CONF_ERRSTR];
-    ngx_http_opentelemetry_header_mask_list *header_mask_list;
-    ngx_http_opentelemetry_header_mask      *header_mask;
+    ngx_http_opentelemetry_mask_list        *header_mask_list;
+    ngx_http_opentelemetry_mask             *header_mask;
     ngx_uint_t                               i;
-    ngx_http_core_main_conf_t               *cmcf;
-    ngx_http_compile_complex_value_t         ccv;
 
     if (*parray == NGX_CONF_UNSET_PTR || *parray == NULL) {
-        *parray = ngx_array_create(cf->pool, 1, sizeof(ngx_http_opentelemetry_header_mask_list));
+        *parray = ngx_array_create(cf->pool, 1, sizeof(ngx_http_opentelemetry_mask_list));
         if (*parray == NULL)
             return NGX_CONF_ERROR;
     }
@@ -1291,7 +1399,7 @@ ngx_http_set_opentelemetry_header_mask(ngx_conf_t *cf, ngx_command_t *cmd, void 
     ngx_strlow(values[1].data, values[1].data, values[1].len);
 
     for (i = 0; i < (*parray)->nelts; i++) {
-        header_mask_list = &((ngx_http_opentelemetry_header_mask_list*)(*parray)->elts)[i];
+        header_mask_list = &((ngx_http_opentelemetry_mask_list*)(*parray)->elts)[i];
         if (header_mask_list->header_name.len != values[1].len)
             continue;
 
@@ -1301,41 +1409,70 @@ ngx_http_set_opentelemetry_header_mask(ngx_conf_t *cf, ngx_command_t *cmd, void 
         }
     }
 
-    if (i == (*parray)->nelts) {
-        header_mask_list = ngx_array_push(*parray);
-        header_mask_list->header_name = values[1];
-        header_mask_list->mask_list = ngx_array_create(cf->pool, 1, sizeof(ngx_http_opentelemetry_header_mask));
-        if (header_mask_list->mask_list == NULL)
+    if (i == (*parray)->nelts &&
+        (header_mask = ngx_http_opentelemetry_add_mask(cf, *parray, &values[1])) == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    return ngx_http_opentelemetry_set_mask(cf, header_mask, &values[2], &values[3]);
+#else
+    return "requires PCRE library";
+#endif
+}
+
+static char*
+ngx_http_set_opentelemetry_mask(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+#if (NGX_PCRE)
+    ngx_array_t                            **parray = conf + cmd->offset;
+    ngx_str_t                               *values = cf->args->elts;
+    ngx_http_opentelemetry_mask_rule        *mask_rules;
+    ngx_http_opentelemetry_mask_list        *mask_list;
+    ngx_http_opentelemetry_mask             *mask;
+    ngx_uint_t                               i, j;
+
+    if (*parray == NGX_CONF_UNSET_PTR || *parray == NULL) {
+        *parray = ngx_array_create(cf->pool, 1, sizeof(ngx_http_opentelemetry_mask_rule));
+        if (*parray == NULL)
             return NGX_CONF_ERROR;
-        header_mask = ngx_array_push(header_mask_list->mask_list);
+    }
+    ngx_strlow(values[2].data, values[2].data, values[2].len);
+
+    for (i = 0; i < (*parray)->nelts; i++) {
+        mask_rules = ((ngx_http_opentelemetry_mask_rule*)(*parray)->elts) + i;
+        if (mask_rules->rule_name.len == values[1].len &&
+            ngx_strncmp(mask_rules->rule_name.data, values[1].data, values[1].len) == 0)
+        {
+            for (j = 0; j < mask_rules->mask_rule->nelts; j++) {
+                mask_list = ((ngx_http_opentelemetry_mask_list*)mask_rules->mask_rule->elts) + j;
+                if (mask_list->header_name.len == values[2].len &&
+                    ngx_strncmp(mask_list->header_name.data, values[2].data, values[2].len) == 0)
+                {
+                    mask = ngx_array_push(mask_list->mask_list);
+                    break;
+                }
+            }
+            if (j == mask_rules->mask_rule->nelts) {
+                mask = ngx_http_opentelemetry_add_mask(cf, mask_rules->mask_rule, &values[2]);
+                if (mask == NULL)
+                    return NGX_CONF_ERROR;
+            }
+            break;
+        }
     }
 
-    ngx_memzero(&rc, sizeof(rc));
-    rc.pattern = values[2];
-    rc.err.len = NGX_MAX_CONF_ERRSTR;
-    rc.err.data = errstr;
-
-    header_mask->regex = ngx_http_regex_compile(cf, &rc);
-    if (header_mask->regex == NULL)
-        return NGX_CONF_ERROR;
-
-    if (header_mask->regex->ncaptures == 0) {
-        header_mask->regex->ncaptures = 1;
-        cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
-        if (cmcf->ncaptures == 0)
-            cmcf->ncaptures = 1;
+    if (i == (*parray)->nelts) {
+        mask_rules = ngx_array_push(*parray);
+        mask_rules->rule_name = values[1];
+        mask_rules->mask_rule = ngx_array_create(cf->pool, 1, sizeof(ngx_http_opentelemetry_mask_list));
+        if (mask_rules->mask_rule == NULL)
+            return NGX_CONF_ERROR;
+        mask = ngx_http_opentelemetry_add_mask(cf, mask_rules->mask_rule, &values[2]);
+        if (mask == NULL)
+            return NGX_CONF_ERROR;
     }
 
-    ngx_memzero(&ccv, sizeof(ccv));
-    ccv.cf = cf;
-    ccv.value = &values[3];
-    ccv.complex_value = &header_mask->mask_name;
-
-    if (ngx_http_compile_complex_value(&ccv) != NGX_OK)
-        return NGX_CONF_ERROR;
-
-    return NGX_CONF_OK;
-
+    return ngx_http_opentelemetry_set_mask(cf, mask, &values[3], &values[4]);
 #else
     return "requires PCRE library";
 #endif
