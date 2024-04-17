@@ -186,14 +186,9 @@ ngx_http_lua_opentelemetry_span_finish_helper(void *data) {
     return;
 }
 
-opentelemetry_span *
-ngx_http_lua_opentelemetry_get_current_span(void *data)
+static opentelemetry_span *
+ngx_http_lua_opentelemetry_get_current_span_req(lua_State *L, ngx_http_request_t *r)
 {
-    lua_State *L = (lua_State*)data;
-
-    ngx_http_request_t *r;
-    r = ngx_http_lua_get_req(L);
-
     if (r == NULL) {
         luaL_error(L, "no request object found");
     }
@@ -202,6 +197,15 @@ ngx_http_lua_opentelemetry_get_current_span(void *data)
         return NULL;
 
     return ngx_http_lua_opentelemetry_span_peek(L);
+}
+
+opentelemetry_span *
+ngx_http_lua_opentelemetry_get_current_span(void *data)
+{
+    lua_State *L = (lua_State*)data;
+    ngx_http_request_t *r = ngx_http_lua_get_req(L);
+
+    return ngx_http_lua_opentelemetry_get_current_span_req(L, r);
 }
 
 static int
@@ -472,7 +476,9 @@ ngx_http_lua_opentelemetry_span_log(lua_State *L)
 static int
 ngx_http_lua_opentelemetry_span_event(lua_State *L)
 {
-    opentelemetry_span *span = ngx_http_lua_opentelemetry_get_current_span(L);
+    ngx_http_request_t *r = ngx_http_lua_get_req(L);
+    opentelemetry_span *span = ngx_http_lua_opentelemetry_get_current_span_req(L, r);
+
     if (span == NULL)
         return 0;
 
@@ -480,6 +486,7 @@ ngx_http_lua_opentelemetry_span_event(lua_State *L)
 
     int table_idx;
     opentelemetry_string name = OPENTELEMETRY_STR(NULL, 0);
+    opentelemetry_string mask_name = OPENTELEMETRY_STR(NULL, 0);
     if (lua_istable(L, 1))
         table_idx = 1;
     else {
@@ -502,6 +509,8 @@ ngx_http_lua_opentelemetry_span_event(lua_State *L)
         }
         table_idx = 2;
     }
+    mask_name.ptr = lua_tolstring(L, 3, &mask_name.len);
+    ngx_array_t *rule_list = ngx_http_opentelemetry_get_mask_rule(r, &mask_name);
 
     /* TODO: use iterable opentelemetry_span_add_event interface, when it will be done */
     opentelemetry_attribute lattrs[32], *attrs = lattrs;
@@ -555,6 +564,18 @@ ngx_http_lua_opentelemetry_span_event(lua_State *L)
         }
         opentelemetry_attribute *attr = &attrs[nattrs++];
         bool fill_attr_rv = ngx_http_lua_opentelemetry_fill_attr(attr, L, key, key_len, &extras[nextras]);
+
+        if (attr->value.type == OPENTELEMETRY_TYPE_STRING) {
+            ngx_array_t *mask_list = ngx_http_opentelemetry_get_rule_list(rule_list, &attr->name);
+            if (mask_list != NULL) {
+                ngx_str_t value = {.len = attr->value.s.len, .data = (u_char *)attr->value.s.ptr};
+                if (ngx_http_apply_header_mask_list(r, mask_list, &value) != NGX_OK)
+                    continue;
+                attr->value.s.ptr = (char *)value.data;
+                attr->value.s.len = value.len;
+            }
+        }
+
         if (extras[nextras] != NULL)
             nextras++;
         if (!fill_attr_rv) {
