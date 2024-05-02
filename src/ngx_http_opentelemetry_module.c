@@ -494,7 +494,7 @@ ngx_http_opentelemetry_get_mask_rule(ngx_http_request_t *r, const opentelemetry_
     ngx_http_opentelemetry_loc_conf_t      *olcf = ngx_http_get_module_loc_conf(r, ngx_http_opentelemetry_module);
     ngx_uint_t                              i;
 
-    if (olcf->mask != NULL)
+    if (olcf->mask != NULL && rule_name->len > 0)
     {
         for (i = 0; i < olcf->mask->nelts; i++)
         {
