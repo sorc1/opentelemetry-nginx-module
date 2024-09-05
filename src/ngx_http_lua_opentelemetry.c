@@ -39,7 +39,7 @@ ngx_http_lua_opentelemetry_span_peek(lua_State *L) {
     ngx_http_lua_opentelemetry_get_spans(L, L);
 
     lua_State *P = L;
-    while (lua_isnil(L, -1) || luaL_getn(L, -1) == 0) {
+    while (lua_isnil(L, -1) || lua_objlen(L, -1) == 0) {
         ngx_http_request_t *r = ngx_http_lua_get_req(L);
         ngx_http_lua_ctx_t *ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
         ngx_http_lua_co_ctx_t *coctx = ngx_http_lua_get_co_ctx(P, ctx);
@@ -53,8 +53,8 @@ ngx_http_lua_opentelemetry_span_peek(lua_State *L) {
         }
     }
 
-    if (!lua_isnil(L, -1) && luaL_getn(L, -1) != 0) {
-        lua_rawgeti(L, -1, luaL_getn(L, -1));
+    if (!lua_isnil(L, -1) && lua_objlen(L, -1) != 0) {
+        lua_rawgeti(L, -1, lua_objlen(L, -1));
         span = lua_touserdata(L, -1);
         lua_pop(L, 1);
     }
@@ -82,7 +82,7 @@ ngx_http_lua_opentelemetry_span_push(lua_State *L, opentelemetry_span *span) {
     }
 
     lua_pushlightuserdata(L, span);
-    lua_rawseti(L, -2, luaL_getn(L, -2) + 1);
+    lua_rawseti(L, -2, lua_objlen(L, -2) + 1);
     lua_pop(L, 2);
 }
 
@@ -96,10 +96,10 @@ ngx_http_lua_opentelemetry_span_pop(lua_State *L) {
         return;
     }
 
-    size_t n = luaL_getn(L, -1);
+    size_t n = lua_objlen(L, -1);
     if (n > 0) {
         lua_pushnil(L);
-        lua_rawseti(L, -2, luaL_getn(L, -2));
+        lua_rawseti(L, -2, lua_objlen(L, -2));
     }
     lua_pop(L, 2);
 }
